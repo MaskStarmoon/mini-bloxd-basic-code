@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini Bloxd</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://threejs.org/examples/js/loaders/FontLoader.js"></script>
+    <script src="https://threejs.org/examples/js/geometries/TextGeometry.js"></script>
+</head>
+<body>
+    <div id="inputContainer">
+        <input type="text" id="nameInput" placeholder="Masukkan nama">
+        <button onclick="startGame()">Mulai Game</button>
+    </div>
+
+    <script>
+        let playerName = "";
+        let playerId = Math.random().toString(36).substring(7);
+        let socket;
+
+        function startGame() {
+            playerName = document.getElementById("nameInput").value.trim() || "Player_" + playerId;
+            document.getElementById("inputContainer").style.display = "none";
+
+            // Mulai WebSocket dan Game
+            initGame();
+        }
+
+        function initGame() {
+            console.log("Memulai game...");
+            socket = new WebSocket("wss://spiced-concrete-selenium.glitch.me");
+
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            const floorGeo = new THREE.BoxGeometry(10, 1, 10);
+            const floorMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            scene.add(floor);
+
+            const playerGeo = new THREE.BoxGeometry(1, 1, 1);
+            const playerMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const player = new THREE.Mesh(playerGeo, playerMat);
+            scene.add(player);
+
+            let playerLabel;
+            const fontLoader = new THREE.FontLoader();
+            fontLoader.load("https://threejs.org/examples/fonts/helvetiker_regular.typeface.json", function (font) {
+                const textGeo = new THREE.TextGeometry(playerName, {
+                    font: font,
+                    size: 0.3,
+                    height: 0.01
+                });
+                const textMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                playerLabel = new THREE.Mesh(textGeo, textMat);
+                scene.add(playerLabel);
+            });
+
+            let otherPlayers = {};
+            let playerLabels = {};
+
+            camera.position.z = 5;
+            camera.position.y = 2;
+
+            let keys = {};
+            window.addEventListener("keydown", (e) => (keys[e.key] = true));
+            window.addEventListener("keyup", (e) => (keys[e.key] = false));
+
+            let isSocketReady = false;
+            socket.onopen = () => {
+                console.log("WebSocket terhubung!");
+                isSocketReady = true;
+
+                // Kirim info pemain baru ke server
+                socket.send(JSON.stringify({
+                    type: "join",
+                    id: playerId,
+                    name: playerName,
+                    x: player.position.x,
+                    y: player.position.y,
+                    z: player.position.z
+                }));
+            };
+
+            function update() {
+                if (keys["ArrowUp"]) player.position.z -= 0.1;
+                if (keys["ArrowDown"]) player.position.z += 0.1;
+                if (keys["ArrowLeft"]) player.position.x -= 0.1;
+                if (keys["ArrowRight"]) player.position.x += 0.1;
+
+                if (isSocketReady) {
+                    socket.send(JSON.stringify({
+                        type: "move",
+                        id: playerId,
+                        x: player.position.x,
+                        y: player.position.y,
+                        z: player.position.z
+                    }));
+                }
+
+                if (playerLabel) {
+                    playerLabel.position.set(player.position.x, player.position.y + 1.2, player.position.z);
+                }
+
+                for (let id in playerLabels) {
+                    let label = playerLabels[id];
+                    if (otherPlayers[id]) {
+                        label.position.set(otherPlayers[id].position.x, otherPlayers[id].position.y + 1.2, otherPlayers[id].position.z);
+                    }
+                }
+
+                renderer.render(scene, camera);
+                requestAnimationFrame(update);
+            }
+
+            socket.onmessage = (event) => {
+                let data = JSON.parse(event.data);
+                if (data.type === "update") {
+                    for (let id in data.players) {
+                        if (id !== playerId) {
+                            if (!otherPlayers[id]) {
+                                let newPlayerGeo = new THREE.BoxGeometry(1, 1, 1);
+                                let newPlayerMat = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+                                let newPlayer = new THREE.Mesh(newPlayerGeo, newPlayerMat);
+                                scene.add(newPlayer);
+                                otherPlayers[id] = newPlayer;
+
+                                fontLoader.load("https://threejs.org/examples/fonts/helvetiker_regular.typeface.json", function (font) {
+                                    const textGeo = new THREE.TextGeometry(data.players[id].name, {
+                                        font: font,
+                                        size: 0.3,
+                                        height: 0.01
+                                    });
+                                    const textMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                                    let playerText = new THREE.Mesh(textGeo, textMat);
+                                    scene.add(playerText);
+                                    playerLabels[id] = playerText;
+                                });
+                            }
+
+                            otherPlayers[id].position.set(
+                                data.players[id].x,
+                                data.players[id].y,
+                                data.players[id].z
+                            );
+                        }
+                    }
+
+                    for (let id in otherPlayers) {
+                        if (!data.players[id]) {
+                            scene.remove(otherPlayers[id]);
+                            scene.remove(playerLabels[id]);
+                            delete otherPlayers[id];
+                            delete playerLabels[id];
+                        }
+                    }
+                }
+            };
+
+            socket.onerror = (error) => {
+                console.error("WebSocket Error:", error);
+            };
+
+            update();
+        }
+    </script>
+</body>
+</html>
